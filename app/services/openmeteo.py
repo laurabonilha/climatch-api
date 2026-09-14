@@ -54,3 +54,27 @@ def buscar_previsao(lat: float, lon: float, data: str) -> dict:
         "chance_chuva": dados["daily"]["precipitation_probability_max"][0],
         "vento_max": dados["daily"]["wind_speed_10m_max"][0],
     }
+    
+def buscar_previsao_horaria(lat: float, lon: float, data: str) -> dict:
+    resposta = httpx.get(FORECAST_URL, params={
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "precipitation_probability",
+        "timezone": "auto",
+        "start_date": data,
+        "end_date": data,
+    })
+
+    if resposta.status_code == 400:
+        raise PrevisaoIndisponivel(f"Data '{data}' fora do intervalo suportado")
+
+    resposta.raise_for_status()
+    dados = resposta.json()
+
+    if not dados["hourly"]["time"]:
+        raise PrevisaoIndisponivel(f"Sem previsão horária disponível para a data {data}")
+
+    return {
+        "horarios": dados["hourly"]["time"],
+        "chance_chuva_horaria": dados["hourly"]["precipitation_probability"],
+    }

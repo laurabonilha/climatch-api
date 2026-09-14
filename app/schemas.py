@@ -1,13 +1,5 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from datetime import datetime
-
-class PrevisaoResponse(BaseModel):
-    cidade: str
-    data: str
-    temp_min: float
-    temp_max: float
-    chance_chuva: int
-    classificacao: str
 
 class ConsultaClimaOut(BaseModel):
     id: int
@@ -16,12 +8,41 @@ class ConsultaClimaOut(BaseModel):
     temp_min: float
     temp_max: float
     chance_chuva: int
+    vento_max: float
     classificacao: str
     consultado_em: datetime
 
     class Config:
         from_attributes = True
 
-class LimiteCreate(BaseModel):
-    chance_chuva_limite: int = Field(..., ge=0, le=100)
-    vento_limite: float = Field(..., ge=0)
+
+class AvaliarEventoRequest(BaseModel):
+    cidade: str
+    data: str
+    tipo_evento: str
+
+
+class AvaliarEventoResponse(BaseModel):
+    classificacao: str
+    recomendacao: str
+    melhor_horario: str
+    motivo_horario: str
+
+
+class ConsultaItem(BaseModel):
+    cidade: str
+    data: str
+
+
+class LoteRequest(BaseModel):
+    consultas: list[ConsultaItem]
+
+
+class ResultadoLote(BaseModel):
+    cidade: str
+    data: str
+    classificacao: str
+
+
+class LoteResponse(BaseModel):
+    resultados: list[ResultadoLote]

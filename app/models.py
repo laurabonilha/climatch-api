@@ -11,5 +11,6 @@ class ConsultaClima(Base):
     temp_min = Column(Float, nullable=False)
     temp_max = Column(Float, nullable=False)
     chance_chuva = Column(Integer, nullable=False)
+    vento_max = Column(Float, nullable=False)
     classificacao = Column(String, nullable=False)
     consultado_em = Column(DateTime(timezone=True), server_default=func.now())
