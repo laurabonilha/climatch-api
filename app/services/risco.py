@@ -50,6 +50,16 @@ def gerar_recomendacao(tipo_evento: str, classificacao: str, tipo_reconhecido: b
     return texto
 
 
+CLASSIFICACAO_RANK = {"favoravel": 0, "moderado": 1, "arriscado": 2}
+
+
+def escolher_melhor(candidatos: list[dict]) -> dict | None:
+    validos = [c for c in candidatos if c["classificacao"] in CLASSIFICACAO_RANK]
+    if not validos:
+        return None
+    return min(validos, key=lambda c: (CLASSIFICACAO_RANK[c["classificacao"]], c["chance_chuva"]))
+
+
 def obter_condicoes_no_horario(
     horarios: list[str],
     temperaturas: list[float],
@@ -69,8 +79,16 @@ def obter_condicoes_no_horario(
     return None
 
 
+HORA_MIN_RECOMENDADA = 7
+HORA_MAX_RECOMENDADA = 22
+
+
 def calcular_melhor_horario(horarios: list[str], chances_chuva: list[int]) -> tuple[str, str]:
-    indice_melhor = chances_chuva.index(min(chances_chuva))
+    indices_candidatos = [
+        i for i in range(len(horarios))
+        if HORA_MIN_RECOMENDADA <= i <= HORA_MAX_RECOMENDADA
+    ]
+    indice_melhor = min(indices_candidatos, key=lambda i: chances_chuva[i])
     horario_completo = horarios[indice_melhor]
     horario_formatado = horario_completo.split("T")[1]
 
