@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
@@ -10,6 +11,8 @@ from app.schemas import (
     EventosEmRiscoRequest, EventosEmRiscoResponse, ResultadoEmRisco,
     MelhorDataRequest, MelhorDataResponse, ResultadoData,
     EstatisticaCidade, EstatisticasResponse,
+    EventoCreate, EventoOut, ResultadoEmRiscoEvento, EventosEmRiscoSalvosResponse,
+    SugestaoMelhorDataCreate, SugestaoMelhorDataOut,
 )
 from app.services.openmeteo import (
     buscar_coordenadas, buscar_previsao, buscar_previsao_horaria,
@@ -23,6 +26,13 @@ from app.services.risco import (
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Climatch API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")
@@ -81,27 +91,26 @@ def obter_previsao_cacheada(cidade: str, data: str, db: Session) -> tuple[dict, 
     return dados_previsao, (lat, lon)
 
 
-@app.post("/previsao/avaliar-evento", response_model=AvaliarEventoResponse)
-def avaliar_evento(pedido: AvaliarEventoRequest, db: Session = Depends(get_db)):
-    dados_diarios, coordenadas = obter_previsao_cacheada(pedido.cidade, pedido.data, db)
+def avaliar_evento_core(cidade: str, data: str, hora: str | None, tipo_evento: str, db: Session) -> dict:
+    dados_diarios, coordenadas = obter_previsao_cacheada(cidade, data, db)
 
-    limites = obter_limites_por_tipo(pedido.tipo_evento)
-    reconhecido = tipo_evento_reconhecido(pedido.tipo_evento)
+    limites = obter_limites_por_tipo(tipo_evento)
+    reconhecido = tipo_evento_reconhecido(tipo_evento)
     classificacao_geral = classificar_risco(dados_diarios, limites["chance_chuva_limite"], limites["vento_limite"])
-    recomendacao = gerar_recomendacao(pedido.tipo_evento, classificacao_geral, reconhecido)
+    recomendacao = gerar_recomendacao(tipo_evento, classificacao_geral, reconhecido)
 
     if coordenadas:
         lat, lon = coordenadas
     else:
         try:
-            lat, lon = buscar_coordenadas(pedido.cidade)
+            lat, lon = buscar_coordenadas(cidade)
         except CidadeNaoEncontrada:
             raise HTTPException(status_code=404, detail="Cidade não encontrada")
         except ServicoExternoIndisponivel:
             raise HTTPException(status_code=503, detail="Serviço de geocodificação indisponível no momento")
 
     try:
-        dados_horarios = buscar_previsao_horaria(lat, lon, pedido.data)
+        dados_horarios = buscar_previsao_horaria(lat, lon, data)
     except PrevisaoIndisponivel:
         raise HTTPException(status_code=400, detail="Previsão horária indisponível para essa data")
     except ServicoExternoIndisponivel:
@@ -112,65 +121,97 @@ def avaliar_evento(pedido: AvaliarEventoRequest, db: Session = Depends(get_db)):
     )
 
     condicoes_no_horario = None
-    if pedido.hora:
+    if hora:
         condicoes_no_horario = obter_condicoes_no_horario(
             dados_horarios["horarios"],
             dados_horarios["temperatura_horaria"],
             dados_horarios["chance_chuva_horaria"],
             dados_horarios["vento_horario"],
-            pedido.hora,
+            hora,
         )
 
+    return {
+        "classificacao_geral": classificacao_geral,
+        "recomendacao": recomendacao,
+        "tipo_evento_reconhecido": reconhecido,
+        "condicoes_no_horario_informado": condicoes_no_horario,
+        "melhor_horario_hora": melhor_horario_valor,
+        "melhor_horario_motivo": motivo_horario,
+    }
+
+
+@app.post("/previsao/avaliar-evento", response_model=AvaliarEventoResponse)
+def avaliar_evento(pedido: AvaliarEventoRequest, db: Session = Depends(get_db)):
+    resultado = avaliar_evento_core(pedido.cidade, pedido.data, pedido.hora, pedido.tipo_evento, db)
+
     return AvaliarEventoResponse(
-        classificacao_geral=classificacao_geral,
-        recomendacao=recomendacao,
-        tipo_evento_reconhecido=reconhecido,
-        condicoes_no_horario_informado=condicoes_no_horario,
-        melhor_horario=MelhorHorario(hora=melhor_horario_valor, motivo=motivo_horario),
+        classificacao_geral=resultado["classificacao_geral"],
+        recomendacao=resultado["recomendacao"],
+        tipo_evento_reconhecido=resultado["tipo_evento_reconhecido"],
+        condicoes_no_horario_informado=resultado["condicoes_no_horario_informado"],
+        melhor_horario=MelhorHorario(
+            hora=resultado["melhor_horario_hora"],
+            motivo=resultado["melhor_horario_motivo"],
+        ),
     )
 
 
-@app.post("/previsao/eventos-em-risco", response_model=EventosEmRiscoResponse)
-def eventos_em_risco(pedido: EventosEmRiscoRequest, db: Session = Depends(get_db)):
+def avaliar_lista_em_risco(itens: list[tuple[str, str, str | None]], db: Session) -> list[dict]:
     resultados = []
-    for evento in pedido.eventos:
+    for cidade, data, tipo_evento in itens:
         try:
-            dados, _ = obter_previsao_cacheada(evento.cidade, evento.data, db)
-            limites = obter_limites_por_tipo(evento.tipo_evento)
+            dados, _ = obter_previsao_cacheada(cidade, data, db)
+            limites = obter_limites_por_tipo(tipo_evento)
             classificacao = classificar_risco(dados, limites["chance_chuva_limite"], limites["vento_limite"])
         except HTTPException:
             classificacao = "indisponivel"
 
-        resultados.append(ResultadoEmRisco(
-            cidade=evento.cidade,
-            data=evento.data,
-            classificacao=classificacao,
-            em_risco=(classificacao == "arriscado"),
-        ))
+        resultados.append({
+            "cidade": cidade,
+            "data": data,
+            "classificacao": classificacao,
+            "em_risco": classificacao == "arriscado",
+        })
 
-    return EventosEmRiscoResponse(resultados=resultados)
+    return resultados
 
 
-@app.post("/previsao/melhor-data", response_model=MelhorDataResponse)
-def melhor_data(pedido: MelhorDataRequest, db: Session = Depends(get_db)):
-    limites = obter_limites_por_tipo(pedido.tipo_evento)
+@app.post("/previsao/eventos-em-risco", response_model=EventosEmRiscoResponse)
+def eventos_em_risco(pedido: EventosEmRiscoRequest, db: Session = Depends(get_db)):
+    itens = [(evento.cidade, evento.data, evento.tipo_evento) for evento in pedido.eventos]
+    resultados = avaliar_lista_em_risco(itens, db)
+
+    return EventosEmRiscoResponse(
+        resultados=[ResultadoEmRisco(**resultado) for resultado in resultados]
+    )
+
+
+def calcular_melhor_data_core(cidade: str, tipo_evento: str, datas: list[str], db: Session) -> dict:
+    limites = obter_limites_por_tipo(tipo_evento)
     resultados = []
-    for data in pedido.datas:
+    for data in datas:
         try:
-            dados, _ = obter_previsao_cacheada(pedido.cidade, data, db)
+            dados, _ = obter_previsao_cacheada(cidade, data, db)
             classificacao = classificar_risco(dados, limites["chance_chuva_limite"], limites["vento_limite"])
             chance_chuva = dados["chance_chuva"]
         except HTTPException:
             classificacao = "indisponivel"
             chance_chuva = None
 
-        resultados.append(ResultadoData(data=data, classificacao=classificacao, chance_chuva=chance_chuva))
+        resultados.append({"data": data, "classificacao": classificacao, "chance_chuva": chance_chuva})
 
-    melhor = escolher_melhor([resultado.model_dump() for resultado in resultados])
+    melhor = escolher_melhor(resultados)
+
+    return {"resultados": resultados, "melhor_data": melhor["data"] if melhor else None}
+
+
+@app.post("/previsao/melhor-data", response_model=MelhorDataResponse)
+def melhor_data(pedido: MelhorDataRequest, db: Session = Depends(get_db)):
+    resultado = calcular_melhor_data_core(pedido.cidade, pedido.tipo_evento, pedido.datas, db)
 
     return MelhorDataResponse(
-        resultados=resultados,
-        melhor_data=melhor["data"] if melhor else None,
+        resultados=[ResultadoData(**item) for item in resultado["resultados"]],
+        melhor_data=resultado["melhor_data"],
     )
 
 
@@ -254,4 +295,192 @@ def remover_consulta(consulta_id: int, db: Session = Depends(get_db)):
     if not consulta:
         raise HTTPException(status_code=404, detail="Consulta não encontrada")
     db.delete(consulta)
+    db.commit()
+
+
+def _condicoes_para_evento(resultado: dict) -> tuple:
+    condicoes = resultado["condicoes_no_horario_informado"]
+    if not condicoes:
+        return None, None, None
+    return condicoes["temperatura"], condicoes["chance_chuva"], condicoes["vento"]
+
+
+def _aplicar_avaliacao_no_evento(evento: models.Evento, resultado: dict) -> None:
+    temperatura, chance_chuva, vento = _condicoes_para_evento(resultado)
+    evento.classificacao_geral = resultado["classificacao_geral"]
+    evento.recomendacao = resultado["recomendacao"]
+    evento.tipo_evento_reconhecido = resultado["tipo_evento_reconhecido"]
+    evento.melhor_horario_hora = resultado["melhor_horario_hora"]
+    evento.melhor_horario_motivo = resultado["melhor_horario_motivo"]
+    evento.condicoes_horario_temperatura = temperatura
+    evento.condicoes_horario_chance_chuva = chance_chuva
+    evento.condicoes_horario_vento = vento
+
+
+@app.post("/eventos", response_model=EventoOut, status_code=201)
+def criar_evento(pedido: EventoCreate, db: Session = Depends(get_db)):
+    resultado = avaliar_evento_core(pedido.cidade, pedido.data_evento, pedido.hora, pedido.tipo_evento, db)
+
+    novo_evento = models.Evento(
+        nome=pedido.nome,
+        tipo_evento=pedido.tipo_evento,
+        cidade=pedido.cidade,
+        data_evento=pedido.data_evento,
+        hora=pedido.hora,
+        descricao=pedido.descricao,
+    )
+    _aplicar_avaliacao_no_evento(novo_evento, resultado)
+
+    db.add(novo_evento)
+    db.commit()
+    db.refresh(novo_evento)
+
+    return novo_evento
+
+
+@app.get("/eventos/em-risco", response_model=EventosEmRiscoSalvosResponse)
+def eventos_salvos_em_risco(db: Session = Depends(get_db)):
+    hoje = datetime.utcnow().strftime("%Y-%m-%d")
+    eventos = (
+        db.query(models.Evento)
+        .filter(models.Evento.data_evento >= hoje)
+        .order_by(models.Evento.data_evento)
+        .all()
+    )
+
+    itens = [(evento.cidade, evento.data_evento, evento.tipo_evento) for evento in eventos]
+    resultados = avaliar_lista_em_risco(itens, db)
+
+    resultados_anotados = [
+        ResultadoEmRiscoEvento(
+            id=evento.id,
+            nome=evento.nome,
+            cidade=resultado["cidade"],
+            data_evento=resultado["data"],
+            classificacao=resultado["classificacao"],
+            em_risco=resultado["em_risco"],
+        )
+        for evento, resultado in zip(eventos, resultados)
+    ]
+
+    return EventosEmRiscoSalvosResponse(resultados=resultados_anotados)
+
+
+@app.get("/eventos", response_model=list[EventoOut])
+def listar_eventos(cidade: str | None = None, db: Session = Depends(get_db)):
+    query = db.query(models.Evento)
+    if cidade:
+        query = query.filter(models.Evento.cidade == cidade)
+    return query.order_by(models.Evento.data_evento).all()
+
+
+@app.get("/eventos/{evento_id}", response_model=EventoOut)
+def obter_evento(evento_id: int, db: Session = Depends(get_db)):
+    evento = db.query(models.Evento).filter(models.Evento.id == evento_id).first()
+    if not evento:
+        raise HTTPException(status_code=404, detail="Evento não encontrado")
+    return evento
+
+
+@app.put("/eventos/{evento_id}", response_model=EventoOut)
+def atualizar_evento(evento_id: int, pedido: EventoCreate, db: Session = Depends(get_db)):
+    evento = db.query(models.Evento).filter(models.Evento.id == evento_id).first()
+    if not evento:
+        raise HTTPException(status_code=404, detail="Evento não encontrado")
+
+    precisa_reavaliar = (
+        pedido.cidade != evento.cidade
+        or pedido.data_evento != evento.data_evento
+        or pedido.hora != evento.hora
+        or pedido.tipo_evento != evento.tipo_evento
+    )
+
+    evento.nome = pedido.nome
+    evento.tipo_evento = pedido.tipo_evento
+    evento.cidade = pedido.cidade
+    evento.data_evento = pedido.data_evento
+    evento.hora = pedido.hora
+    evento.descricao = pedido.descricao
+
+    if precisa_reavaliar:
+        resultado = avaliar_evento_core(pedido.cidade, pedido.data_evento, pedido.hora, pedido.tipo_evento, db)
+        _aplicar_avaliacao_no_evento(evento, resultado)
+
+    db.commit()
+    db.refresh(evento)
+
+    return evento
+
+
+@app.delete("/eventos/{evento_id}", status_code=204)
+def remover_evento(evento_id: int, db: Session = Depends(get_db)):
+    evento = db.query(models.Evento).filter(models.Evento.id == evento_id).first()
+    if not evento:
+        raise HTTPException(status_code=404, detail="Evento não encontrado")
+    db.delete(evento)
+    db.commit()
+
+
+@app.post("/sugestoes-data", response_model=SugestaoMelhorDataOut, status_code=201)
+def criar_sugestao_melhor_data(pedido: SugestaoMelhorDataCreate, db: Session = Depends(get_db)):
+    resultado = calcular_melhor_data_core(pedido.cidade, pedido.tipo_evento, pedido.datas_candidatas, db)
+
+    nova_sugestao = models.SugestaoMelhorData(
+        nome=pedido.nome,
+        cidade=pedido.cidade,
+        tipo_evento=pedido.tipo_evento,
+        datas_candidatas=pedido.datas_candidatas,
+        resultados=resultado["resultados"],
+        melhor_data=resultado["melhor_data"],
+    )
+    db.add(nova_sugestao)
+    db.commit()
+    db.refresh(nova_sugestao)
+
+    return nova_sugestao
+
+
+@app.get("/sugestoes-data", response_model=list[SugestaoMelhorDataOut])
+def listar_sugestoes_melhor_data(cidade: str | None = None, db: Session = Depends(get_db)):
+    query = db.query(models.SugestaoMelhorData)
+    if cidade:
+        query = query.filter(models.SugestaoMelhorData.cidade == cidade)
+    return query.order_by(models.SugestaoMelhorData.criado_em.desc()).all()
+
+
+@app.get("/sugestoes-data/{sugestao_id}", response_model=SugestaoMelhorDataOut)
+def obter_sugestao_melhor_data(sugestao_id: int, db: Session = Depends(get_db)):
+    sugestao = db.query(models.SugestaoMelhorData).filter(models.SugestaoMelhorData.id == sugestao_id).first()
+    if not sugestao:
+        raise HTTPException(status_code=404, detail="Sugestão não encontrada")
+    return sugestao
+
+
+@app.put("/sugestoes-data/{sugestao_id}", response_model=SugestaoMelhorDataOut)
+def atualizar_sugestao_melhor_data(sugestao_id: int, pedido: SugestaoMelhorDataCreate, db: Session = Depends(get_db)):
+    sugestao = db.query(models.SugestaoMelhorData).filter(models.SugestaoMelhorData.id == sugestao_id).first()
+    if not sugestao:
+        raise HTTPException(status_code=404, detail="Sugestão não encontrada")
+
+    resultado = calcular_melhor_data_core(pedido.cidade, pedido.tipo_evento, pedido.datas_candidatas, db)
+
+    sugestao.nome = pedido.nome
+    sugestao.cidade = pedido.cidade
+    sugestao.tipo_evento = pedido.tipo_evento
+    sugestao.datas_candidatas = pedido.datas_candidatas
+    sugestao.resultados = resultado["resultados"]
+    sugestao.melhor_data = resultado["melhor_data"]
+
+    db.commit()
+    db.refresh(sugestao)
+
+    return sugestao
+
+
+@app.delete("/sugestoes-data/{sugestao_id}", status_code=204)
+def remover_sugestao_melhor_data(sugestao_id: int, db: Session = Depends(get_db)):
+    sugestao = db.query(models.SugestaoMelhorData).filter(models.SugestaoMelhorData.id == sugestao_id).first()
+    if not sugestao:
+        raise HTTPException(status_code=404, detail="Sugestão não encontrada")
+    db.delete(sugestao)
     db.commit()
