@@ -62,8 +62,6 @@ def obter_previsao_cacheada(cidade: str, data: str, db: Session) -> dict:
     except ServicoExternoIndisponivel:
         raise HTTPException(status_code=503, detail="Serviço de previsão indisponível no momento")
 
-    classificacao_padrao = classificar_risco(dados_previsao)
-
     novo_registro = models.ConsultaClima(
         cidade=cidade,
         data_consultada=data,
@@ -71,7 +69,6 @@ def obter_previsao_cacheada(cidade: str, data: str, db: Session) -> dict:
         temp_max=dados_previsao["temp_max"],
         chance_chuva=dados_previsao["chance_chuva"],
         vento_max=dados_previsao["vento_max"],
-        classificacao=classificacao_padrao,
     )
     db.add(novo_registro)
     db.commit()

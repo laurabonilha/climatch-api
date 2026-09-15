@@ -9,7 +9,6 @@ class ConsultaClimaOut(BaseModel):
     temp_max: float
     chance_chuva: int
     vento_max: float
-    classificacao: str
     consultado_em: datetime
 
     class Config:
