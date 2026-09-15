@@ -74,7 +74,7 @@ def buscar_previsao_horaria(lat: float, lon: float, data: str) -> dict:
         resposta = httpx.get(FORECAST_URL, params={
             "latitude": lat,
             "longitude": lon,
-            "hourly": "precipitation_probability",
+            "hourly": "precipitation_probability,temperature_2m,wind_speed_10m",
             "timezone": "auto",
             "start_date": data,
             "end_date": data,
@@ -95,4 +95,6 @@ def buscar_previsao_horaria(lat: float, lon: float, data: str) -> dict:
     return {
         "horarios": dados["hourly"]["time"],
         "chance_chuva_horaria": dados["hourly"]["precipitation_probability"],
+        "temperatura_horaria": dados["hourly"]["temperature_2m"],
+        "vento_horario": dados["hourly"]["wind_speed_10m"],
     }

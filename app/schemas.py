@@ -1,5 +1,8 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
+
+DATA_PATTERN = r"^\d{4}-\d{2}-\d{2}$"
+HORA_PATTERN = r"^([01]\d|2[0-3]):[0-5]\d$"
 
 class ConsultaClimaOut(BaseModel):
     id: int
@@ -17,15 +20,29 @@ class ConsultaClimaOut(BaseModel):
 
 class AvaliarEventoRequest(BaseModel):
     cidade: str
-    data: str
+    data: str = Field(pattern=DATA_PATTERN, description="Data no formato AAAA-MM-DD")
+    hora: str | None = Field(default=None, pattern=HORA_PATTERN, description="Hora no formato HH:MM (24h)")
     tipo_evento: str
 
 
+class CondicoesHorario(BaseModel):
+    hora: str
+    temperatura: float
+    chance_chuva: int
+    vento: float
+
+
+class MelhorHorario(BaseModel):
+    hora: str
+    motivo: str
+
+
 class AvaliarEventoResponse(BaseModel):
-    classificacao: str
+    classificacao_geral: str
     recomendacao: str
-    melhor_horario: str
-    motivo_horario: str
+    tipo_evento_reconhecido: bool
+    condicoes_no_horario_informado: CondicoesHorario | None = None
+    melhor_horario: MelhorHorario
 
 
 class ConsultaItem(BaseModel):

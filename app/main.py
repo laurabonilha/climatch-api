@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from app.database import Base, engine, get_db
 from app import models
 from app.schemas import (
-    ConsultaClimaOut, AvaliarEventoRequest, AvaliarEventoResponse,
+    ConsultaClimaOut, AvaliarEventoRequest, AvaliarEventoResponse, MelhorHorario,
     LoteRequest, LoteResponse, ResultadoLote,
 )
 from app.services.openmeteo import (
@@ -13,7 +13,8 @@ from app.services.openmeteo import (
     CidadeNaoEncontrada, PrevisaoIndisponivel, ServicoExternoIndisponivel,
 )
 from app.services.risco import (
-    classificar_risco, obter_limites_por_tipo, gerar_recomendacao, calcular_melhor_horario,
+    classificar_risco, obter_limites_por_tipo, tipo_evento_reconhecido, gerar_recomendacao,
+    calcular_melhor_horario, obter_condicoes_no_horario,
 )
 
 Base.metadata.create_all(bind=engine)
@@ -26,7 +27,7 @@ def health_check():
     return {"status": "ok"}
 
 
-def obter_previsao_cacheada(cidade: str, data: str, db: Session) -> dict:
+def obter_previsao_cacheada(cidade: str, data: str, db: Session) -> tuple[dict, tuple[float, float] | None]:
     uma_hora_atras = datetime.utcnow() - timedelta(hours=1)
 
     registro = (
@@ -41,12 +42,13 @@ def obter_previsao_cacheada(cidade: str, data: str, db: Session) -> dict:
     )
 
     if registro:
-        return {
+        dados = {
             "temp_min": registro.temp_min,
             "temp_max": registro.temp_max,
             "chance_chuva": registro.chance_chuva,
             "vento_max": registro.vento_max,
         }
+        return dados, None
 
     try:
         lat, lon = buscar_coordenadas(cidade)
@@ -73,23 +75,27 @@ def obter_previsao_cacheada(cidade: str, data: str, db: Session) -> dict:
     db.add(novo_registro)
     db.commit()
 
-    return dados_previsao
+    return dados_previsao, (lat, lon)
 
 
 @app.post("/previsao/avaliar-evento", response_model=AvaliarEventoResponse)
 def avaliar_evento(pedido: AvaliarEventoRequest, db: Session = Depends(get_db)):
-    dados = obter_previsao_cacheada(pedido.cidade, pedido.data, db)
+    dados_diarios, coordenadas = obter_previsao_cacheada(pedido.cidade, pedido.data, db)
 
     limites = obter_limites_por_tipo(pedido.tipo_evento)
-    classificacao = classificar_risco(dados, limites["chance_chuva_limite"], limites["vento_limite"])
-    recomendacao = gerar_recomendacao(pedido.tipo_evento, classificacao)
+    reconhecido = tipo_evento_reconhecido(pedido.tipo_evento)
+    classificacao_geral = classificar_risco(dados_diarios, limites["chance_chuva_limite"], limites["vento_limite"])
+    recomendacao = gerar_recomendacao(pedido.tipo_evento, classificacao_geral, reconhecido)
 
-    try:
-        lat, lon = buscar_coordenadas(pedido.cidade)
-    except CidadeNaoEncontrada:
-        raise HTTPException(status_code=404, detail="Cidade não encontrada")
-    except ServicoExternoIndisponivel:
-        raise HTTPException(status_code=503, detail="Serviço de geocodificação indisponível no momento")
+    if coordenadas:
+        lat, lon = coordenadas
+    else:
+        try:
+            lat, lon = buscar_coordenadas(pedido.cidade)
+        except CidadeNaoEncontrada:
+            raise HTTPException(status_code=404, detail="Cidade não encontrada")
+        except ServicoExternoIndisponivel:
+            raise HTTPException(status_code=503, detail="Serviço de geocodificação indisponível no momento")
 
     try:
         dados_horarios = buscar_previsao_horaria(lat, lon, pedido.data)
@@ -98,15 +104,26 @@ def avaliar_evento(pedido: AvaliarEventoRequest, db: Session = Depends(get_db)):
     except ServicoExternoIndisponivel:
         raise HTTPException(status_code=503, detail="Serviço de previsão indisponível no momento")
 
-    melhor_horario, motivo_horario = calcular_melhor_horario(
+    melhor_horario_valor, motivo_horario = calcular_melhor_horario(
         dados_horarios["horarios"], dados_horarios["chance_chuva_horaria"]
     )
 
+    condicoes_no_horario = None
+    if pedido.hora:
+        condicoes_no_horario = obter_condicoes_no_horario(
+            dados_horarios["horarios"],
+            dados_horarios["temperatura_horaria"],
+            dados_horarios["chance_chuva_horaria"],
+            dados_horarios["vento_horario"],
+            pedido.hora,
+        )
+
     return AvaliarEventoResponse(
-        classificacao=classificacao,
+        classificacao_geral=classificacao_geral,
         recomendacao=recomendacao,
-        melhor_horario=melhor_horario,
-        motivo_horario=motivo_horario,
+        tipo_evento_reconhecido=reconhecido,
+        condicoes_no_horario_informado=condicoes_no_horario,
+        melhor_horario=MelhorHorario(hora=melhor_horario_valor, motivo=motivo_horario),
     )
 
 
@@ -115,7 +132,7 @@ def avaliar_lote(pedido: LoteRequest, db: Session = Depends(get_db)):
     resultados = []
     for item in pedido.consultas:
         try:
-            dados = obter_previsao_cacheada(item.cidade, item.data, db)
+            dados, _ = obter_previsao_cacheada(item.cidade, item.data, db)
             classificacao = classificar_risco(dados)
         except HTTPException:
             classificacao = "indisponivel"
