@@ -10,7 +10,7 @@ from app.schemas import (
 )
 from app.services.openmeteo import (
     buscar_coordenadas, buscar_previsao, buscar_previsao_horaria,
-    CidadeNaoEncontrada, PrevisaoIndisponivel,
+    CidadeNaoEncontrada, PrevisaoIndisponivel, ServicoExternoIndisponivel,
 )
 from app.services.risco import (
     classificar_risco, obter_limites_por_tipo, gerar_recomendacao, calcular_melhor_horario,
@@ -52,11 +52,15 @@ def obter_previsao_cacheada(cidade: str, data: str, db: Session) -> dict:
         lat, lon = buscar_coordenadas(cidade)
     except CidadeNaoEncontrada:
         raise HTTPException(status_code=404, detail="Cidade não encontrada")
+    except ServicoExternoIndisponivel:
+        raise HTTPException(status_code=503, detail="Serviço de geocodificação indisponível no momento")
 
     try:
         dados_previsao = buscar_previsao(lat, lon, data)
     except PrevisaoIndisponivel:
         raise HTTPException(status_code=400, detail="Previsão indisponível para essa data")
+    except ServicoExternoIndisponivel:
+        raise HTTPException(status_code=503, detail="Serviço de previsão indisponível no momento")
 
     classificacao_padrao = classificar_risco(dados_previsao)
 
@@ -87,11 +91,15 @@ def avaliar_evento(pedido: AvaliarEventoRequest, db: Session = Depends(get_db)):
         lat, lon = buscar_coordenadas(pedido.cidade)
     except CidadeNaoEncontrada:
         raise HTTPException(status_code=404, detail="Cidade não encontrada")
+    except ServicoExternoIndisponivel:
+        raise HTTPException(status_code=503, detail="Serviço de geocodificação indisponível no momento")
 
     try:
         dados_horarios = buscar_previsao_horaria(lat, lon, pedido.data)
     except PrevisaoIndisponivel:
         raise HTTPException(status_code=400, detail="Previsão horária indisponível para essa data")
+    except ServicoExternoIndisponivel:
+        raise HTTPException(status_code=503, detail="Serviço de previsão indisponível no momento")
 
     melhor_horario, motivo_horario = calcular_melhor_horario(
         dados_horarios["horarios"], dados_horarios["chance_chuva_horaria"]

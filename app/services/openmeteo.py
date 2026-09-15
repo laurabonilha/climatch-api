@@ -2,6 +2,7 @@ import httpx
 
 GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+TIMEOUT_SEGUNDOS = 10.0
 
 
 class CidadeNaoEncontrada(Exception):
@@ -12,14 +13,22 @@ class PrevisaoIndisponivel(Exception):
     pass
 
 
+class ServicoExternoIndisponivel(Exception):
+    pass
+
+
 def buscar_coordenadas(cidade: str) -> tuple[float, float]:
-    resposta = httpx.get(GEOCODING_URL, params={
-        "name": cidade,
-        "count": 1,
-        "language": "pt",
-        "format": "json",
-    })
-    resposta.raise_for_status()
+    try:
+        resposta = httpx.get(GEOCODING_URL, params={
+            "name": cidade,
+            "count": 1,
+            "language": "pt",
+            "format": "json",
+        }, timeout=TIMEOUT_SEGUNDOS)
+        resposta.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise ServicoExternoIndisponivel(f"Falha ao consultar geocodificação para '{cidade}'") from exc
+
     dados = resposta.json()
 
     if "results" not in dados or len(dados["results"]) == 0:
@@ -30,19 +39,23 @@ def buscar_coordenadas(cidade: str) -> tuple[float, float]:
 
 
 def buscar_previsao(lat: float, lon: float, data: str) -> dict:
-    resposta = httpx.get(FORECAST_URL, params={
-        "latitude": lat,
-        "longitude": lon,
-        "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max",
-        "timezone": "auto",
-        "start_date": data,
-        "end_date": data,
-    })
-    
-    if resposta.status_code == 400:
-        raise PrevisaoIndisponivel(f"Data '{data}' fora do intervalo suportado pela previsão")
+    try:
+        resposta = httpx.get(FORECAST_URL, params={
+            "latitude": lat,
+            "longitude": lon,
+            "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max",
+            "timezone": "auto",
+            "start_date": data,
+            "end_date": data,
+        }, timeout=TIMEOUT_SEGUNDOS)
 
-    resposta.raise_for_status()
+        if resposta.status_code == 400:
+            raise PrevisaoIndisponivel(f"Data '{data}' fora do intervalo suportado pela previsão")
+
+        resposta.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise ServicoExternoIndisponivel(f"Falha ao consultar previsão diária para {data}") from exc
+
     dados = resposta.json()
 
     if not dados["daily"]["time"]:
@@ -54,21 +67,26 @@ def buscar_previsao(lat: float, lon: float, data: str) -> dict:
         "chance_chuva": dados["daily"]["precipitation_probability_max"][0],
         "vento_max": dados["daily"]["wind_speed_10m_max"][0],
     }
-    
+
+
 def buscar_previsao_horaria(lat: float, lon: float, data: str) -> dict:
-    resposta = httpx.get(FORECAST_URL, params={
-        "latitude": lat,
-        "longitude": lon,
-        "hourly": "precipitation_probability",
-        "timezone": "auto",
-        "start_date": data,
-        "end_date": data,
-    })
+    try:
+        resposta = httpx.get(FORECAST_URL, params={
+            "latitude": lat,
+            "longitude": lon,
+            "hourly": "precipitation_probability",
+            "timezone": "auto",
+            "start_date": data,
+            "end_date": data,
+        }, timeout=TIMEOUT_SEGUNDOS)
 
-    if resposta.status_code == 400:
-        raise PrevisaoIndisponivel(f"Data '{data}' fora do intervalo suportado")
+        if resposta.status_code == 400:
+            raise PrevisaoIndisponivel(f"Data '{data}' fora do intervalo suportado")
 
-    resposta.raise_for_status()
+        resposta.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise ServicoExternoIndisponivel(f"Falha ao consultar previsão horária para {data}") from exc
+
     dados = resposta.json()
 
     if not dados["hourly"]["time"]:
