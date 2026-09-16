@@ -48,6 +48,27 @@ class AvaliarEventoResponse(BaseModel):
     melhor_horario: MelhorHorario
 
 
+class EventoItem(BaseModel):
+    cidade: str
+    data: DataStr
+    tipo_evento: str | None = None
+
+
+class EventosEmRiscoRequest(BaseModel):
+    eventos: list[EventoItem]
+
+
+class ResultadoEmRisco(BaseModel):
+    cidade: str
+    data: str
+    classificacao: str
+    em_risco: bool
+
+
+class EventosEmRiscoResponse(BaseModel):
+    resultados: list[ResultadoEmRisco]
+
+
 class MelhorDataRequest(BaseModel):
     cidade: str
     tipo_evento: str
@@ -106,6 +127,19 @@ class EventoOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ResultadoEmRiscoEvento(BaseModel):
+    id: int
+    nome: str
+    cidade: str
+    data_evento: str
+    classificacao: str
+    em_risco: bool
+
+
+class EventosEmRiscoSalvosResponse(BaseModel):
+    resultados: list[ResultadoEmRiscoEvento]
 
 
 class SugestaoMelhorDataCreate(BaseModel):

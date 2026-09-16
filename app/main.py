@@ -8,9 +8,10 @@ from app.database import Base, engine, get_db
 from app import models
 from app.schemas import (
     ConsultaClimaOut, AvaliarEventoRequest, AvaliarEventoResponse, MelhorHorario,
+    EventosEmRiscoRequest, EventosEmRiscoResponse, ResultadoEmRisco,
     MelhorDataRequest, MelhorDataResponse, ResultadoData,
     EstatisticaCidade, EstatisticasResponse,
-    EventoCreate, EventoOut,
+    EventoCreate, EventoOut, ResultadoEmRiscoEvento, EventosEmRiscoSalvosResponse,
     SugestaoMelhorDataCreate, SugestaoMelhorDataOut,
 )
 from app.services.openmeteo import (
@@ -152,6 +153,36 @@ def avaliar_evento(pedido: AvaliarEventoRequest, db: Session = Depends(get_db)):
             hora=resultado["melhor_horario_hora"],
             motivo=resultado["melhor_horario_motivo"],
         ),
+    )
+
+
+def avaliar_lista_em_risco(itens: list[tuple[str, str, str | None]], db: Session) -> list[dict]:
+    resultados = []
+    for cidade, data, tipo_evento in itens:
+        try:
+            dados, _ = obter_previsao_cacheada(cidade, data, db)
+            limites = obter_limites_por_tipo(tipo_evento)
+            classificacao = classificar_risco(dados, limites["chance_chuva_limite"], limites["vento_limite"])
+        except HTTPException:
+            classificacao = "indisponivel"
+
+        resultados.append({
+            "cidade": cidade,
+            "data": data,
+            "classificacao": classificacao,
+            "em_risco": classificacao == "arriscado",
+        })
+
+    return resultados
+
+
+@app.post("/previsao/eventos-em-risco", response_model=EventosEmRiscoResponse)
+def eventos_em_risco(pedido: EventosEmRiscoRequest, db: Session = Depends(get_db)):
+    itens = [(evento.cidade, evento.data, evento.tipo_evento) for evento in pedido.eventos]
+    resultados = avaliar_lista_em_risco(itens, db)
+
+    return EventosEmRiscoResponse(
+        resultados=[ResultadoEmRisco(**resultado) for resultado in resultados]
     )
 
 
@@ -305,6 +336,34 @@ def criar_evento(pedido: EventoCreate, db: Session = Depends(get_db)):
     db.refresh(novo_evento)
 
     return novo_evento
+
+
+@app.get("/eventos/em-risco", response_model=EventosEmRiscoSalvosResponse)
+def eventos_salvos_em_risco(db: Session = Depends(get_db)):
+    hoje = datetime.utcnow().strftime("%Y-%m-%d")
+    eventos = (
+        db.query(models.Evento)
+        .filter(models.Evento.data_evento >= hoje)
+        .order_by(models.Evento.data_evento)
+        .all()
+    )
+
+    itens = [(evento.cidade, evento.data_evento, evento.tipo_evento) for evento in eventos]
+    resultados = avaliar_lista_em_risco(itens, db)
+
+    resultados_anotados = [
+        ResultadoEmRiscoEvento(
+            id=evento.id,
+            nome=evento.nome,
+            cidade=resultado["cidade"],
+            data_evento=resultado["data"],
+            classificacao=resultado["classificacao"],
+            em_risco=resultado["em_risco"],
+        )
+        for evento, resultado in zip(eventos, resultados)
+    ]
+
+    return EventosEmRiscoSalvosResponse(resultados=resultados_anotados)
 
 
 @app.get("/eventos", response_model=list[EventoOut])
