@@ -42,14 +42,14 @@ def tipo_evento_reconhecido(tipo_evento: str | None) -> bool:
 
 def gerar_recomendacao(tipo_evento: str, classificacao: str, tipo_reconhecido: bool = True) -> str:
     if classificacao == "arriscado":
-        texto = f"Condições arriscadas para um evento do tipo '{tipo_evento}'. Considere um plano B ou remarcar."
+        texto = f"Condições arriscadas para um evento do tipo {tipo_evento}. Considere um plano B ou remarcar."
     elif classificacao == "moderado":
-        texto = f"Condições medianas para '{tipo_evento}'. Vale ter um plano de contingência."
+        texto = f"Condições medianas para {tipo_evento}. Vale ter um plano de contingência."
     else:
-        texto = f"Condições favoráveis para '{tipo_evento}'."
+        texto = f"Condições favoráveis para {tipo_evento}."
 
     if not tipo_reconhecido:
-        texto = f"Tipo de evento '{tipo_evento}' não mapeado — usando critérios genéricos de risco. {texto}"
+        texto = f"Tipo de evento {tipo_evento} não mapeado — usando critérios genéricos de risco. {texto}"
 
     return texto
 
