@@ -28,12 +28,16 @@ LIMITES_POR_TIPO = {
 LIMITE_GENERICO = {"chance_chuva_limite": 60, "vento_limite": 40.0}
 
 
-def obter_limites_por_tipo(tipo_evento: str) -> dict:
-    return LIMITES_POR_TIPO.get(tipo_evento, LIMITE_GENERICO)
+def obter_limites_por_tipo(tipo_evento: str | None) -> dict:
+    if not tipo_evento:
+        return LIMITE_GENERICO
+    return LIMITES_POR_TIPO.get(tipo_evento.strip().lower(), LIMITE_GENERICO)
 
 
-def tipo_evento_reconhecido(tipo_evento: str) -> bool:
-    return tipo_evento in LIMITES_POR_TIPO
+def tipo_evento_reconhecido(tipo_evento: str | None) -> bool:
+    if not tipo_evento:
+        return False
+    return tipo_evento.strip().lower() in LIMITES_POR_TIPO
 
 
 def gerar_recomendacao(tipo_evento: str, classificacao: str, tipo_reconhecido: bool = True) -> str:

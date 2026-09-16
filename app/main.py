@@ -46,7 +46,7 @@ def obter_previsao_cacheada(cidade: str, data: str, db: Session) -> tuple[dict, 
     registro = (
         db.query(models.ConsultaClima)
         .filter(
-            models.ConsultaClima.cidade == cidade,
+            func.lower(models.ConsultaClima.cidade) == cidade.strip().lower(),
             models.ConsultaClima.data_consultada == data,
             models.ConsultaClima.consultado_em >= uma_hora_atras,
         )
@@ -226,7 +226,7 @@ def estatisticas(cidade: str | None = None, db: Session = Depends(get_db)):
     ).group_by(models.ConsultaClima.cidade)
 
     if cidade:
-        registro = query.filter(models.ConsultaClima.cidade == cidade).first()
+        registro = query.filter(func.lower(models.ConsultaClima.cidade) == cidade.strip().lower()).first()
         if not registro:
             return EstatisticaCidade(cidade=cidade, total_consultas=0)
         return EstatisticaCidade(
@@ -254,7 +254,7 @@ def estatisticas(cidade: str | None = None, db: Session = Depends(get_db)):
 def listar_historico(cidade: str | None = None, db: Session = Depends(get_db)):
     query = db.query(models.ConsultaClima)
     if cidade:
-        query = query.filter(models.ConsultaClima.cidade == cidade)
+        query = query.filter(func.lower(models.ConsultaClima.cidade) == cidade.strip().lower())
     return query.order_by(models.ConsultaClima.consultado_em.desc()).all()
 
 
@@ -370,7 +370,7 @@ def eventos_salvos_em_risco(db: Session = Depends(get_db)):
 def listar_eventos(cidade: str | None = None, db: Session = Depends(get_db)):
     query = db.query(models.Evento)
     if cidade:
-        query = query.filter(models.Evento.cidade == cidade)
+        query = query.filter(func.lower(models.Evento.cidade) == cidade.strip().lower())
     return query.order_by(models.Evento.data_evento).all()
 
 
@@ -389,10 +389,10 @@ def atualizar_evento(evento_id: int, pedido: EventoCreate, db: Session = Depends
         raise HTTPException(status_code=404, detail="Evento não encontrado")
 
     precisa_reavaliar = (
-        pedido.cidade != evento.cidade
+        pedido.cidade.strip().lower() != evento.cidade.strip().lower()
         or pedido.data_evento != evento.data_evento
         or pedido.hora != evento.hora
-        or pedido.tipo_evento != evento.tipo_evento
+        or pedido.tipo_evento.strip().lower() != evento.tipo_evento.strip().lower()
     )
 
     evento.nome = pedido.nome
@@ -444,7 +444,7 @@ def criar_sugestao_melhor_data(pedido: SugestaoMelhorDataCreate, db: Session = D
 def listar_sugestoes_melhor_data(cidade: str | None = None, db: Session = Depends(get_db)):
     query = db.query(models.SugestaoMelhorData)
     if cidade:
-        query = query.filter(models.SugestaoMelhorData.cidade == cidade)
+        query = query.filter(func.lower(models.SugestaoMelhorData.cidade) == cidade.strip().lower())
     return query.order_by(models.SugestaoMelhorData.criado_em.desc()).all()
 
 
