@@ -7,9 +7,6 @@ from datetime import datetime, timedelta
 from app.database import Base, engine, get_db
 from app import models
 from app.schemas import (
-    ConsultaClimaOut, AvaliarEventoRequest, AvaliarEventoResponse, MelhorHorario,
-    MelhorDataRequest, MelhorDataResponse, ResultadoData,
-    EstatisticaCidade, EstatisticasResponse,
     EventoCreate, EventoOut,
     SugestaoMelhorDataCreate, SugestaoMelhorDataOut,
 )
@@ -32,11 +29,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
 
 
 def obter_previsao_cacheada(cidade: str, data: str, db: Session) -> tuple[dict, tuple[float, float] | None]:
@@ -139,22 +131,6 @@ def avaliar_evento_core(cidade: str, data: str, hora: str | None, tipo_evento: s
     }
 
 
-@app.post("/previsao/avaliar-evento", response_model=AvaliarEventoResponse)
-def avaliar_evento(pedido: AvaliarEventoRequest, db: Session = Depends(get_db)):
-    resultado = avaliar_evento_core(pedido.cidade, pedido.data, pedido.hora, pedido.tipo_evento, db)
-
-    return AvaliarEventoResponse(
-        classificacao_geral=resultado["classificacao_geral"],
-        recomendacao=resultado["recomendacao"],
-        tipo_evento_reconhecido=resultado["tipo_evento_reconhecido"],
-        condicoes_no_horario_informado=resultado["condicoes_no_horario_informado"],
-        melhor_horario=MelhorHorario(
-            hora=resultado["melhor_horario_hora"],
-            motivo=resultado["melhor_horario_motivo"],
-        ),
-    )
-
-
 def calcular_melhor_data_core(cidade: str, tipo_evento: str, datas: list[str], db: Session) -> dict:
     limites = obter_limites_por_tipo(tipo_evento)
     resultados = []
@@ -172,99 +148,6 @@ def calcular_melhor_data_core(cidade: str, tipo_evento: str, datas: list[str], d
     melhor = escolher_melhor(resultados)
 
     return {"resultados": resultados, "melhor_data": melhor["data"] if melhor else None}
-
-
-@app.post("/previsao/melhor-data", response_model=MelhorDataResponse)
-def melhor_data(pedido: MelhorDataRequest, db: Session = Depends(get_db)):
-    resultado = calcular_melhor_data_core(pedido.cidade, pedido.tipo_evento, pedido.datas, db)
-
-    return MelhorDataResponse(
-        resultados=[ResultadoData(**item) for item in resultado["resultados"]],
-        melhor_data=resultado["melhor_data"],
-    )
-
-
-@app.get("/previsao/estatisticas", response_model=EstatisticaCidade | EstatisticasResponse)
-def estatisticas(cidade: str | None = None, db: Session = Depends(get_db)):
-    query = db.query(
-        models.ConsultaClima.cidade,
-        func.count(models.ConsultaClima.id).label("total_consultas"),
-        func.avg(models.ConsultaClima.chance_chuva).label("chance_chuva_media"),
-        func.avg(models.ConsultaClima.vento_max).label("vento_max_medio"),
-        func.avg((models.ConsultaClima.temp_min + models.ConsultaClima.temp_max) / 2).label("temperatura_media"),
-    ).group_by(models.ConsultaClima.cidade)
-
-    if cidade:
-        registro = query.filter(func.lower(models.ConsultaClima.cidade) == cidade.strip().lower()).first()
-        if not registro:
-            return EstatisticaCidade(cidade=cidade, total_consultas=0)
-        return EstatisticaCidade(
-            cidade=registro.cidade,
-            total_consultas=registro.total_consultas,
-            chance_chuva_media=round(registro.chance_chuva_media, 1),
-            vento_max_medio=round(registro.vento_max_medio, 1),
-            temperatura_media=round(registro.temperatura_media, 1),
-        )
-
-    registros = query.all()
-    return EstatisticasResponse(cidades=[
-        EstatisticaCidade(
-            cidade=r.cidade,
-            total_consultas=r.total_consultas,
-            chance_chuva_media=round(r.chance_chuva_media, 1),
-            vento_max_medio=round(r.vento_max_medio, 1),
-            temperatura_media=round(r.temperatura_media, 1),
-        )
-        for r in registros
-    ])
-
-
-@app.get("/previsao/historico", response_model=list[ConsultaClimaOut])
-def listar_historico(cidade: str | None = None, db: Session = Depends(get_db)):
-    query = db.query(models.ConsultaClima)
-    if cidade:
-        query = query.filter(func.lower(models.ConsultaClima.cidade) == cidade.strip().lower())
-    return query.order_by(models.ConsultaClima.consultado_em.desc()).all()
-
-
-@app.patch("/previsao/historico/{consulta_id}", response_model=ConsultaClimaOut)
-def atualizar_consulta(consulta_id: int, db: Session = Depends(get_db)):
-    consulta = db.query(models.ConsultaClima).filter(models.ConsultaClima.id == consulta_id).first()
-    if not consulta:
-        raise HTTPException(status_code=404, detail="Consulta não encontrada")
-
-    try:
-        lat, lon = buscar_coordenadas(consulta.cidade)
-    except CidadeNaoEncontrada:
-        raise HTTPException(status_code=404, detail="Cidade não encontrada")
-    except ServicoExternoIndisponivel:
-        raise HTTPException(status_code=503, detail="Serviço de geocodificação indisponível no momento")
-
-    try:
-        dados_previsao = buscar_previsao(lat, lon, consulta.data_consultada)
-    except PrevisaoIndisponivel:
-        raise HTTPException(status_code=400, detail="Previsão indisponível para essa data")
-    except ServicoExternoIndisponivel:
-        raise HTTPException(status_code=503, detail="Serviço de previsão indisponível no momento")
-
-    consulta.temp_min = dados_previsao["temp_min"]
-    consulta.temp_max = dados_previsao["temp_max"]
-    consulta.chance_chuva = dados_previsao["chance_chuva"]
-    consulta.vento_max = dados_previsao["vento_max"]
-    consulta.consultado_em = datetime.utcnow()
-    db.commit()
-    db.refresh(consulta)
-
-    return consulta
-
-
-@app.delete("/previsao/historico/{consulta_id}", status_code=204)
-def remover_consulta(consulta_id: int, db: Session = Depends(get_db)):
-    consulta = db.query(models.ConsultaClima).filter(models.ConsultaClima.id == consulta_id).first()
-    if not consulta:
-        raise HTTPException(status_code=404, detail="Consulta não encontrada")
-    db.delete(consulta)
-    db.commit()
 
 
 def _condicoes_para_evento(resultado: dict) -> tuple:
@@ -313,14 +196,6 @@ def listar_eventos(cidade: str | None = None, db: Session = Depends(get_db)):
     if cidade:
         query = query.filter(func.lower(models.Evento.cidade) == cidade.strip().lower())
     return query.order_by(models.Evento.data_evento).all()
-
-
-@app.get("/eventos/{evento_id}", response_model=EventoOut)
-def obter_evento(evento_id: int, db: Session = Depends(get_db)):
-    evento = db.query(models.Evento).filter(models.Evento.id == evento_id).first()
-    if not evento:
-        raise HTTPException(status_code=404, detail="Evento não encontrado")
-    return evento
 
 
 @app.put("/eventos/{evento_id}", response_model=EventoOut)
@@ -387,35 +262,6 @@ def listar_sugestoes_melhor_data(cidade: str | None = None, db: Session = Depend
     if cidade:
         query = query.filter(func.lower(models.SugestaoMelhorData.cidade) == cidade.strip().lower())
     return query.order_by(models.SugestaoMelhorData.criado_em.desc()).all()
-
-
-@app.get("/sugestoes-data/{sugestao_id}", response_model=SugestaoMelhorDataOut)
-def obter_sugestao_melhor_data(sugestao_id: int, db: Session = Depends(get_db)):
-    sugestao = db.query(models.SugestaoMelhorData).filter(models.SugestaoMelhorData.id == sugestao_id).first()
-    if not sugestao:
-        raise HTTPException(status_code=404, detail="Sugestão não encontrada")
-    return sugestao
-
-
-@app.put("/sugestoes-data/{sugestao_id}", response_model=SugestaoMelhorDataOut)
-def atualizar_sugestao_melhor_data(sugestao_id: int, pedido: SugestaoMelhorDataCreate, db: Session = Depends(get_db)):
-    sugestao = db.query(models.SugestaoMelhorData).filter(models.SugestaoMelhorData.id == sugestao_id).first()
-    if not sugestao:
-        raise HTTPException(status_code=404, detail="Sugestão não encontrada")
-
-    resultado = calcular_melhor_data_core(pedido.cidade, pedido.tipo_evento, pedido.datas_candidatas, db)
-
-    sugestao.nome = pedido.nome
-    sugestao.cidade = pedido.cidade
-    sugestao.tipo_evento = pedido.tipo_evento
-    sugestao.datas_candidatas = pedido.datas_candidatas
-    sugestao.resultados = resultado["resultados"]
-    sugestao.melhor_data = resultado["melhor_data"]
-
-    db.commit()
-    db.refresh(sugestao)
-
-    return sugestao
 
 
 @app.delete("/sugestoes-data/{sugestao_id}", status_code=204)
