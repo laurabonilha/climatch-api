@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from app.database import Base, engine, get_db
 from app import models
 from app.schemas import (
-    EventoCreate, EventoOut,
+    EventoCreate, EventoAtualizar, EventoOut,
     SugestaoMelhorDataCreate, SugestaoMelhorDataOut,
 )
 from app.services.openmeteo import (
@@ -198,29 +198,19 @@ def listar_eventos(cidade: str | None = None, db: Session = Depends(get_db)):
     return query.order_by(models.Evento.data_evento).all()
 
 
-@app.put("/eventos/{evento_id}", response_model=EventoOut)
-def atualizar_evento(evento_id: int, pedido: EventoCreate, db: Session = Depends(get_db)):
+@app.patch("/eventos/{evento_id}", response_model=EventoOut)
+def atualizar_evento(evento_id: int, pedido: EventoAtualizar, db: Session = Depends(get_db)):
     evento = db.query(models.Evento).filter(models.Evento.id == evento_id).first()
     if not evento:
         raise HTTPException(status_code=404, detail="Evento não encontrado")
 
-    precisa_reavaliar = (
-        pedido.cidade.strip().lower() != evento.cidade.strip().lower()
-        or pedido.data_evento != evento.data_evento
-        or pedido.hora != evento.hora
-        or pedido.tipo_evento.strip().lower() != evento.tipo_evento.strip().lower()
-    )
-
-    evento.nome = pedido.nome
-    evento.tipo_evento = pedido.tipo_evento
-    evento.cidade = pedido.cidade
-    evento.data_evento = pedido.data_evento
+    if pedido.nome is not None:
+        evento.nome = pedido.nome
     evento.hora = pedido.hora
     evento.descricao = pedido.descricao
 
-    if precisa_reavaliar:
-        resultado = avaliar_evento_core(pedido.cidade, pedido.data_evento, pedido.hora, pedido.tipo_evento, db)
-        _aplicar_avaliacao_no_evento(evento, resultado)
+    resultado = avaliar_evento_core(evento.cidade, evento.data_evento, evento.hora, evento.tipo_evento, db)
+    _aplicar_avaliacao_no_evento(evento, resultado)
 
     db.commit()
     db.refresh(evento)

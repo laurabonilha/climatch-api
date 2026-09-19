@@ -42,6 +42,12 @@ class EventoCreate(BaseModel):
         return data_br_para_iso(v)
 
 
+class EventoAtualizar(BaseModel):
+    nome: str | None = None
+    hora: str | None = Field(default=None, pattern=HORA_PATTERN)
+    descricao: str | None = None
+
+
 class EventoOut(BaseModel):
     id: int
     nome: str
